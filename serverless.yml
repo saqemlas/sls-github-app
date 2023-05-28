@@ -1,0 +1,102 @@
+service: github-app
+
+plugins:
+  - serverless-s3-cleaner
+  - serverless-esbuild
+  - serverless-iam-roles-per-function
+
+package:
+  individually: true
+  patterns:
+    - '!node_modules/**'
+    - '!.serverless/**'
+
+custom:
+  project: template
+  baseName: ${self:custom.project}-${self:service}-${self:provider.stage}
+
+  publicKey: ${${file(./private-key.pem)}, ''}
+  appId: ''
+  appSecret: ''
+
+  esbuild:
+    packager: yarn
+    platform: node
+    target: node18
+    bundle: true
+    minify: true
+    sourcemap: true
+    
+  serverless-iam-roles-per-function:
+    defaultInherit: true
+
+  serverless-s3-cleaner:
+    buckets:
+      - ${cf:${self:custom.baseName}.ServerlessDeploymentBucketName, ''}
+
+provider:
+  name: aws
+  region: ${opt:region, 'eu-west-1'}
+  stage: ${opt:stage, 'dev'}
+  stackName: ${self:custom.baseName}
+  deploymentBucket:
+    blockPublicAccess: true
+
+  architecture: arm64
+  runtime: nodejs18.x
+  memorySize: 256
+  timeout: 20
+  versionFunctions: false
+  logRetentionInDays: 30
+  environment:
+    AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+    NODE_OPTIONS: "--enable-source-maps"
+
+  apiName: ${self:custom.baseName}-api
+  endpointType: REGIONAL
+  apiGateway:
+    minimumCompressionSize: 1024
+
+
+functions:
+  webhook:
+    name: ${self:custom.baseName}-webhook
+    handler: functions/webhook/index.handler
+    events:
+      - http:
+          method: POST
+          path: /webhook
+    environment:
+      POWERTOOLS_SERVICE_NAME: ${self:custom.baseName}-webhook
+      GITHUB_APP_PRIVATE_KEY: ${self:custom.publicKey}
+      GITHUB_APP_ID: ${self:custom.appId}
+      GITHUB_APP_SECRET: ${self:custom.appSecret}
+    role: WebhookLambdaRole
+
+
+resources:
+  Resources:
+
+    WebhookLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: ${self:custom.baseName}-webhook-role
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: ${self:custom.baseName}-webhook-policy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: !Sub arn:aws:logs:${self:provider.region}:${aws:accountId}:log-group:/aws/lambda/${self:custom.baseName}-webhook:log-stream:*
